@@ -20,6 +20,7 @@ from utils import *
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
+from torch.utils.tensorboard import SummaryWriter
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--epoch", type=int, default=0, help="epoch to start training from")
@@ -34,13 +35,22 @@ parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads 
 parser.add_argument("--img_height", type=int, default=256, help="size of image height")
 parser.add_argument("--img_width", type=int, default=256, help="size of image width")
 parser.add_argument("--channels", type=int, default=3, help="number of image channels")
-parser.add_argument("--sample_interval", type=int, default=100, help="interval between saving generator outputs")
-parser.add_argument("--checkpoint_interval", type=int, default=-1, help="interval between saving model checkpoints")
+parser.add_argument("--sample_interval", type=int, default=500, help="interval between saving generator outputs")
+parser.add_argument("--logging_interval", type=int, default=200, help="interval between logging information")
+parser.add_argument("--summary_interval", type=int, default=50, help="interval between write summary to tensorboard")
+parser.add_argument("--checkpoint_interval", type=int, default=1, help="interval between saving model checkpoints")
 parser.add_argument("--n_residual_blocks", type=int, default=9, help="number of residual blocks in generator")
 parser.add_argument("--lambda_cyc", type=float, default=10.0, help="cycle loss weight")
 parser.add_argument("--lambda_id", type=float, default=5.0, help="identity loss weight")
 opt = parser.parse_args()
 print(opt)
+
+import logging
+logging.basicConfig(format='[%(asctime)s-%(levelname)s]: %(message)s',
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                    level=logging.INFO)
+
+logging.info(opt)
 
 # Create sample and checkpoint directories
 os.makedirs("images/%s" % opt.dataset_name, exist_ok=True)
@@ -78,28 +88,25 @@ if opt.epoch != 0:
     D_B.load_state_dict(torch.load("saved_models/%s/D_B_%d.pth" % (opt.dataset_name, opt.epoch)))
 else:
     # Initialize weights
-    G_AB.apply(weights_init_normal)
-    G_BA.apply(weights_init_normal)
-    D_A.apply(weights_init_normal)
-    D_B.apply(weights_init_normal)
+    _ = G_AB.apply(weights_init_normal)
+    _ = G_BA.apply(weights_init_normal)
+    _ = D_A.apply(weights_init_normal)
+    _ = D_B.apply(weights_init_normal)
 
 # Optimizers
-optimizer_G = torch.optim.Adam(
-    itertools.chain(G_AB.parameters(), G_BA.parameters()), lr=opt.lr, betas=(opt.b1, opt.b2)
-)
+optimizer_G = torch.optim.Adam(params=itertools.chain(G_AB.parameters(), G_BA.parameters()),
+                               lr=opt.lr,
+                               betas=(opt.b1, opt.b2))
 optimizer_D_A = torch.optim.Adam(D_A.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 optimizer_D_B = torch.optim.Adam(D_B.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 
 # Learning rate update schedulers
-lr_scheduler_G = torch.optim.lr_scheduler.LambdaLR(
-    optimizer_G, lr_lambda=LambdaLR(opt.n_epochs, opt.epoch, opt.decay_epoch).step
-)
-lr_scheduler_D_A = torch.optim.lr_scheduler.LambdaLR(
-    optimizer_D_A, lr_lambda=LambdaLR(opt.n_epochs, opt.epoch, opt.decay_epoch).step
-)
-lr_scheduler_D_B = torch.optim.lr_scheduler.LambdaLR(
-    optimizer_D_B, lr_lambda=LambdaLR(opt.n_epochs, opt.epoch, opt.decay_epoch).step
-)
+lr_scheduler_G = torch.optim.lr_scheduler.LambdaLR(optimizer_G,
+                                                   lr_lambda=LambdaLR(opt.n_epochs, opt.epoch, opt.decay_epoch).step)
+lr_scheduler_D_A = torch.optim.lr_scheduler.LambdaLR(optimizer_D_A,
+                                                     lr_lambda=LambdaLR(opt.n_epochs, opt.epoch, opt.decay_epoch).step)
+lr_scheduler_D_B = torch.optim.lr_scheduler.LambdaLR(optimizer_D_B,
+                                                     lr_lambda=LambdaLR(opt.n_epochs, opt.epoch, opt.decay_epoch).step)
 
 Tensor = torch.cuda.FloatTensor if cuda else torch.Tensor
 
@@ -131,8 +138,9 @@ val_dataloader = DataLoader(
     num_workers=1,
 )
 
+writer = SummaryWriter(log_dir="./runs/%s" % opt.dataset_name)
 
-def sample_images(batches_done):
+def sample_images(save_fp):
     """Saves a generated sample from the test set"""
     imgs = next(iter(val_dataloader))
     G_AB.eval()
@@ -148,7 +156,7 @@ def sample_images(batches_done):
     fake_B = make_grid(fake_B, nrow=5, normalize=True)
     # Arange images along y-axis
     image_grid = torch.cat((real_A, fake_B, real_B, fake_A), 1)
-    save_image(image_grid, "images/%s/%s.png" % (opt.dataset_name, batches_done), normalize=False)
+    save_image(image_grid, save_fp, normalize=False)
 
 
 # ----------
@@ -157,7 +165,7 @@ def sample_images(batches_done):
 
 prev_time = time.time()
 for epoch in range(opt.epoch, opt.n_epochs):
-    for i, batch in enumerate(dataloader):
+    for batch_idx, batch in enumerate(dataloader):
 
         # Set model input
         real_A = Variable(batch["A"].type(Tensor))
@@ -245,31 +253,34 @@ for epoch in range(opt.epoch, opt.n_epochs):
         # --------------
 
         # Determine approximate time left
-        batches_done = epoch * len(dataloader) + i
+        batches_done = epoch * len(dataloader) + batch_idx
         batches_left = opt.n_epochs * len(dataloader) - batches_done
         time_left = datetime.timedelta(seconds=batches_left * (time.time() - prev_time))
         prev_time = time.time()
 
-        # Print log
-        sys.stdout.write(
-            "\r[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f, adv: %f, cycle: %f, identity: %f] ETA: %s"
-            % (
-                epoch,
-                opt.n_epochs,
-                i,
-                len(dataloader),
-                loss_D.item(),
-                loss_G.item(),
-                loss_GAN.item(),
-                loss_cycle.item(),
-                loss_identity.item(),
-                time_left,
-            )
-        )
+        if batches_done % opt.summary_interval == 0:
+            writer.add_scalar("Loss/Discriminator", loss_D.item(), batches_done)
+            writer.add_scalar("Loss/Generator/Total", loss_G.item(), batches_done)
+            writer.add_scalar("Loss/Generator/GAN", loss_GAN.item(), batches_done)
+            writer.add_scalar("Loss/Generator/Cycle", loss_cycle.item(), batches_done)
+            writer.add_scalar("Loss/Generator/Identity", loss_identity.item(), batches_done)
+            grid = make_grid(torch.cat([real_A, fake_A], 3), normalize=True)
+            writer.add_image("realA_fakeA", grid, batches_done)
+
+        if batches_done % opt.logging_interval == 0:
+            info = "[Epoch %d/%d]" % (epoch, opt.n_epochs) \
+                 + "[Batch %d/%d]" % (batch_idx, len(dataloader)) \
+                 + "[D loss: %.4f] " % loss_D.item() \
+                 + "[G loss: %.4f, adv: %.4f, cycle: %.4f, identity: %.4f]" % (loss_G.item(),
+                                                                               loss_GAN.item(),
+                                                                               loss_cycle.item(),
+                                                                               loss_identity.item()) \
+                 + "ETA: %s" % time_left
+            logging.info(info)
 
         # If at sample interval save image
         if batches_done % opt.sample_interval == 0:
-            sample_images(batches_done)
+            sample_images("images/%s/%s_%s.png" % (opt.dataset_name, epoch, batch_idx))
 
     # Update learning rates
     lr_scheduler_G.step()
