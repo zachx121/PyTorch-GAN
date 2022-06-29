@@ -259,12 +259,13 @@ for epoch in range(opt.epoch, opt.n_epochs):
         prev_time = time.time()
 
         if batches_done % opt.summary_interval == 0:
-            writer.add_scalar("Loss/Discriminator", loss_D.item(), batches_done)
-            writer.add_scalar("Loss/Generator/Total", loss_G.item(), batches_done)
-            writer.add_scalar("Loss/Generator/GAN", loss_GAN.item(), batches_done)
-            writer.add_scalar("Loss/Generator/Cycle", loss_cycle.item(), batches_done)
-            writer.add_scalar("Loss/Generator/Identity", loss_identity.item(), batches_done)
-            grid = make_grid(torch.cat([real_A, fake_A], 3), normalize=True)
+            writer.add_scalar("Loss_Discriminator", loss_D.item(), batches_done)
+            writer.add_scalar("Loss_Generator/Total", loss_G.item(), batches_done)
+            writer.add_scalar("Loss_Generator/GAN", loss_GAN.item(), batches_done)
+            writer.add_scalar("Loss_Generator/Cycle", loss_cycle.item(), batches_done)
+            writer.add_scalar("Loss_Generator/Identity", loss_identity.item(), batches_done)
+            grid = make_grid(torch.cat([real_A, fake_B], 3), normalize=True)
+            logging.info("loss_GAN_AB: {}".format(loss_GAN_AB.item()))
             writer.add_image("realA_fakeA", grid, batches_done)
 
         if batches_done % opt.logging_interval == 0:
