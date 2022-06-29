@@ -265,7 +265,7 @@ for epoch in range(opt.epoch, opt.n_epochs):
             writer.add_scalar("Loss_Generator/Cycle", loss_cycle.item(), batches_done)
             writer.add_scalar("Loss_Generator/Identity", loss_identity.item(), batches_done)
             grid = make_grid(torch.cat([real_A, fake_B], 3), normalize=True)
-            logging.info("loss_GAN_AB: {}".format(loss_GAN_AB.item()))
+            # logging.info("loss_GAN_AB: {}".format(loss_GAN_AB.item()))
             writer.add_image("realA_fakeA", grid, batches_done)
 
         if batches_done % opt.logging_interval == 0:
